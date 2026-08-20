@@ -5,8 +5,7 @@ input for a knowledge graph.
 
 ## Requirements
 
-- Python 3.13+
-- `pip install -e .`
+- [uv](https://docs.astral.sh/uv/) (installs Python 3.13+ automatically)
 
 ## Setup
 
@@ -35,7 +34,7 @@ export KNW_API_ID=12345
 export KNW_API_HASH=abcdef1234567890abcdef1234567890
 export KNW_GROUP_IDENTIFIER="https://t.me/+ABC123"
 
-python main.py
+uv run main.py
 ```
 
 The first run will ask for your phone number and a code sent to your Telegram.
@@ -43,7 +42,7 @@ The first run will ask for your phone number and a code sent to your Telegram.
 ### Optional: one-liner
 
 ```bash
-KNW_API_ID=12345 KNW_API_HASH=abcdef... KNW_GROUP_IDENTIFIER=... python main.py
+KNW_API_ID=12345 KNW_API_HASH=abcdef... KNW_GROUP_IDENTIFIER=... uv run main.py
 ```
 
 ## Output
@@ -59,4 +58,4 @@ Plus `topics/_index.json` with a lightweight summary of all topics.
 
 `.env`, `*.session`, and `topics/` are gitignored so credentials and exported
 data never end up in version control. If you want to ship your own `.env`
-template, create `.env.example` committing only placeholder values.# telegram-topics-downloader
+template, create `.env.example` committing only placeholder values.
