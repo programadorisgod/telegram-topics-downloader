@@ -37,7 +37,29 @@ export KNW_GROUP_IDENTIFIER="https://t.me/+ABC123"
 uv run main.py
 ```
 
-The first run will ask for your phone number and a code sent to your Telegram.
+The first run will ask for your phone number (with the country prefix, e.g. `+54 11 2345 6789`) and a code sent to your Telegram.
+
+### Real-time listening (incremental)
+
+Once the bulk export is done, keep the group updated without re-downloading
+everything. New messages are captured as they arrive and written straight into
+the same `topics/<topic_id>_<title>/data.json` (same format as the bulk
+export; files are written atomically).
+
+```bash
+export KNW_API_ID=12345
+export KNW_API_HASH=abcdef1234567890abcdef1234567890
+export KNW_GROUP_IDENTIFIER="https://t.me/+ABC123"
+
+uv run main.py --listen
+```
+
+Leave it running in the background (tmux, screen, systemd). If you re-run the
+bulk export while the listener is on, both write `data.json` and the last
+writer wins — re-run the bulk export afterwards to flatten everything.
+
+The General topic (no topic, `topic_id` 0) lives in `0_General/`; it is not
+part of the bulk export.
 
 ### Optional: one-liner
 

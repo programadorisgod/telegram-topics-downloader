@@ -17,12 +17,13 @@ Uso:
     python main.py
 """
 
+import argparse
 import asyncio
 import json
 import os
 from datetime import datetime, timezone
 
-from telethon import TelegramClient, utils
+from telethon import TelegramClient, events, utils
 from telethon.tl.types import Channel
 
 try:
@@ -43,11 +44,13 @@ TOPICS_DIR = os.getenv("KNW_TOPICS_DIR", "topics")    # cada topic tendrá su pr
 DOWNLOAD_MEDIA = os.getenv("KNW_DOWNLOAD_MEDIA", "true").lower() in ("1", "true", "yes")  # False = solo JSON
 MEDIA_DOWNLOAD_RETRIES = int(os.getenv("KNW_MEDIA_DOWNLOAD_RETRIES", "4"))  # reintentos ante timeouts
 
-if not API_ID or not API_HASH or not GROUP_IDENTIFIER:
-    raise SystemExit(
-        "Faltan variables de entorno: KNW_API_ID, KNW_API_HASH y KNW_GROUP_IDENTIFIER son obligatorias.\n"
-        "Ver README.md para el setup."
-    )
+
+def validate_config():
+    if not API_ID or not API_HASH or not GROUP_IDENTIFIER:
+        raise SystemExit(
+            "Faltan variables de entorno: KNW_API_ID, KNW_API_HASH y KNW_GROUP_IDENTIFIER son obligatorias.\n"
+            "Ver README.md para el setup."
+        )
 # ------------------------------------------------
 
 
@@ -57,6 +60,31 @@ def safe_filename(name, fallback):
     keep = "-_. "
     cleaned = "".join(c for c in name if c.isalnum() or c in keep).strip()
     return cleaned[:80] or fallback
+
+
+def extract_topic_id(msg):
+    """Devuelve el id del topic del mensaje (0 = topic General). None si no hay reply.
+
+    Con `is not None` (no `or`) para que General (reply_to_top_id == 0) no se
+    confunda con un reply a un mensaje suelto.
+    """
+    if msg.reply_to and msg.reply_to.reply_to_top_id is not None:
+        return msg.reply_to.reply_to_top_id
+    if msg.reply_to and msg.reply_to.reply_to_msg_id:
+        return msg.reply_to.reply_to_msg_id
+    return None
+
+
+def build_client():
+    return TelegramClient(
+        SESSION_NAME,
+        API_ID,
+        API_HASH,
+        connection_retries=10,   # reintentos de conexión ante caídas
+        retry_delay=2,           # segundos entre reintentos
+        timeout=30,              # segundos de espera por request antes de timeout
+        request_retries=5,       # reintentos por request individual (incluye GetFileRequest)
+    )
 
 
 async def serialize_message(client, msg, topic_dir):
@@ -89,11 +117,7 @@ async def serialize_message(client, msg, topic_dir):
         # se te pierda al procesar solo mensajes con media.
         "caption": msg.message if msg.media and msg.message else None,
         "reply_to_msg_id": msg.reply_to.reply_to_msg_id if msg.reply_to else None,
-        "topic_id": (
-            msg.reply_to.reply_to_top_id
-            if msg.reply_to and msg.reply_to.reply_to_top_id
-            else (msg.reply_to.reply_to_msg_id if msg.reply_to else None)
-        ),
+        "topic_id": extract_topic_id(msg),
         "is_reply": bool(msg.reply_to),
         "media_type": type(msg.media).__name__ if msg.media else None,
         "local_media_path": local_path,
@@ -132,15 +156,7 @@ async def get_all_topics(client, entity):
 
 
 async def main():
-    client = TelegramClient(
-        SESSION_NAME,
-        API_ID,
-        API_HASH,
-        connection_retries=10,   # reintentos de conexión ante caídas
-        retry_delay=2,           # segundos entre reintentos
-        timeout=30,              # segundos de espera por request antes de timeout
-        request_retries=5,       # reintentos por request individual (incluye GetFileRequest)
-    )
+    client = build_client()
     await client.start()
 
     entity = await client.get_entity(GROUP_IDENTIFIER)
@@ -202,5 +218,106 @@ async def main():
     await client.disconnect()
 
 
+_topic_titles_cache = {}  # topic_id -> título, para no repetir get_messages por mensaje
+
+
+async def get_topic_title(client, entity, topic_id):
+    """Título del topic desde su mensaje raíz (con cache)."""
+    if topic_id in _topic_titles_cache:
+        return _topic_titles_cache[topic_id]
+    try:
+        root = await client.get_messages(entity, ids=topic_id)
+        title = None
+        if root and root.action and hasattr(root.action, "title"):
+            title = root.action.title
+    except Exception:
+        title = None
+    title = title or f"topic_{topic_id}"
+    _topic_titles_cache[topic_id] = title
+    return title
+
+
+def _load_topic_file(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+async def listen_main():
+    """Escucha en tiempo real y hace append de cada mensaje nuevo a messages.jsonl."""
+    client = build_client()
+    await client.start()
+
+    entity = await client.get_entity(GROUP_IDENTIFIER)
+    if not isinstance(entity, Channel) or not getattr(entity, "forum", False):
+        print("Este chat no es un supergrupo con topics (foro) habilitado.")
+        await client.disconnect()
+        return
+
+    os.makedirs(TOPICS_DIR, exist_ok=True)
+    print(f"Escuchando en tiempo real: {entity.title}")
+    print("Ctrl+C para detener (o matá el proceso en tmux/systemd).\n")
+
+    @client.on(events.NewMessage(chats=entity))
+    async def handler(event):
+        msg = event.message
+        topic_id = extract_topic_id(msg)
+        if topic_id is None:  # mensaje suelto en General (sin topic)
+            topic_id, title = 0, "General"
+        else:
+            title = await get_topic_title(client, entity, topic_id)
+
+        folder = f"{topic_id}_{safe_filename(title, f'topic_{topic_id}')}"
+        topic_path = os.path.join(TOPICS_DIR, folder)
+        os.makedirs(topic_path, exist_ok=True)
+
+        media_dir = os.path.join(topic_path, "media")
+        if DOWNLOAD_MEDIA and msg.media:
+            os.makedirs(media_dir, exist_ok=True)
+
+        record = await serialize_message(client, msg, media_dir)
+        record["received_at"] = datetime.now(timezone.utc).isoformat()
+
+        data_path = os.path.join(topic_path, "data.json")
+        export = _load_topic_file(data_path) or {
+            "group": entity.title,
+            "exported_at": record["received_at"],
+            "topic_id": topic_id,
+            "topic_title": title,
+            "message_count": 0,
+            "messages": [],
+        }
+        if any(m["id"] == record["id"] for m in export["messages"]):
+            return  # ya estaba (ej. coincidió con un re-export)
+        export["messages"].append(record)
+        export["message_count"] = len(export["messages"])
+        export["exported_at"] = record["received_at"]
+
+        # escritura atómica para no dejar el archivo a medias
+        # ponytail: si el export masivo corre a la vez, el último en escribir gana (re-export después aplana)
+        tmp = f"{data_path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(export, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, data_path)
+
+        print(f"[NUEVO] topic='{title}' msg_id={msg.id} media={record['media_type']} -> {folder}")
+
+    await client.run_until_disconnected()
+
+
+def run():
+    parser = argparse.ArgumentParser(description="Exporta topics de un foro de Telegram a JSON.")
+    parser.add_argument(
+        "--listen",
+        action="store_true",
+        help="en vez del export masivo, quedate escuchando mensajes nuevos en tiempo real",
+    )
+    args = parser.parse_args()
+    validate_config()
+    asyncio.run(listen_main() if args.listen else main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    run()
