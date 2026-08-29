@@ -1,0 +1,13 @@
+.venv
+__pycache__/
+*.pyc
+.env
+*.session
+mi_sesion.session
+topics/
+knw.db
+.atl/
+.git/
+.gitignore
+ui/node_modules
+ui/dist

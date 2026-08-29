@@ -35,6 +35,32 @@ except ImportError:
     from telethon.tl.functions.channels import GetForumTopicsRequest
     _PARAM_NAME = "channel"
 
+def load_env_file(path=".env"):
+    """Carga .env sin dependencias. Las vars ya exportadas ganan (si no están vacías)."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            if s.startswith("export "):
+                s = s[len("export "):].lstrip()
+            key, _, rest = s.partition("=")
+            key = key.strip()
+            rest = rest.strip()
+            if rest[:1] in ('"', "'"):
+                # valor entre comillas; el comentario va DESPUÉS del par de cierre
+                end = rest.find(rest[0], 1)
+                val = rest[1:end] if end != -1 else rest
+            else:
+                val = rest.split(" #", 1)[0].strip()  # comentario inline fuera de comillas
+            if key and val and not os.environ.get(key):
+                os.environ[key] = val
+
+
+load_env_file()
+
 # ---------- CONFIG (desde environment) ----------
 API_ID = int(os.getenv("KNW_API_ID", "0") or 0)       # obligatorio: tu api_id (número)
 API_HASH = os.getenv("KNW_API_HASH", "")              # obligatorio: tu api_hash
@@ -220,6 +246,11 @@ async def main():
 
 _topic_titles_cache = {}  # topic_id -> título, para no repetir get_messages por mensaje
 
+# hook opcional para el modo listen: si algo lo setea (p.ej. la API) se llama
+# después de cada mensaje nuevo, para reindexar la búsqueda en vivo.
+# Firma: async def hook(record: dict) -> None
+ON_NEW_MESSAGE = None
+
 
 async def get_topic_title(client, entity, topic_id):
     """Título del topic desde su mensaje raíz (con cache)."""
@@ -303,6 +334,12 @@ async def listen_main():
         os.replace(tmp, data_path)
 
         print(f"[NUEVO] topic='{title}' msg_id={msg.id} media={record['media_type']} -> {folder}")
+
+        if ON_NEW_MESSAGE:
+            try:
+                await ON_NEW_MESSAGE(record)
+            except Exception as e:
+                print(f"[listen] hook falló: {e}")
 
     await client.run_until_disconnected()
 

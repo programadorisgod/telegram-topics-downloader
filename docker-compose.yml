@@ -1,0 +1,17 @@
+services:
+  knw:
+    build: .
+    image: knw:latest
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      KNW_TOPICS_DIR: /data/topics
+      KNW_DB_PATH: /data/knw.db
+      KNW_SESSION_NAME: /data/knw_session
+    volumes:
+      - knw_data:/data
+    restart: unless-stopped
+
+volumes:
+  knw_data:
